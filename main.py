@@ -245,7 +245,7 @@ def build_pdf(profile, messages):
     summary = profile.get("summary")
     if summary and summary != "Not discussed":
         pdf.set_font("Helvetica", "I", 11)
-        pdf.multi_cell(0, 7, _pdf_safe(summary))
+        pdf.multi_cell(0, 7, _pdf_safe(summary), new_x="LMARGIN", new_y="NEXT")
         pdf.ln(2)
 
     def field(label, value):
@@ -253,9 +253,9 @@ def build_pdf(profile, messages):
             value = ", ".join(value) if value else "Not discussed"
         value = value if value else "Not discussed"
         pdf.set_font("Helvetica", "B", 11)
-        pdf.multi_cell(0, 7, _pdf_safe(label))
+        pdf.multi_cell(0, 7, _pdf_safe(label), new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Helvetica", "", 11)
-        pdf.multi_cell(0, 7, _pdf_safe(value))
+        pdf.multi_cell(0, 7, _pdf_safe(value), new_x="LMARGIN", new_y="NEXT")
         pdf.ln(1)
 
     field("Budget", profile.get("budget"))
@@ -280,7 +280,7 @@ def build_pdf(profile, messages):
         pdf.set_font("Helvetica", "B", 10)
         pdf.cell(0, 6, _pdf_safe(speaker), new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Helvetica", "", 10)
-        pdf.multi_cell(0, 6, _pdf_safe(content))
+        pdf.multi_cell(0, 6, _pdf_safe(content), new_x="LMARGIN", new_y="NEXT")
         pdf.ln(1)
 
     return bytes(pdf.output())
