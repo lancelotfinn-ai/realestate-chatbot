@@ -1,9 +1,11 @@
 import os, json, subprocess
+from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
+from fpdf import FPDF
 import anthropic
 
 app = FastAPI()
@@ -89,6 +91,28 @@ Then, if helpful, offer a very rough ballpark using your estimate tool. If fetch
 returns an error, don't apologize at length — just ask the buyer to tell you the beds, \
 baths, and asking price so you can still help."""
 
+EXPORT_SYSTEM_PROMPT = """You are summarizing a home-buying conversation into a structured \
+buyer profile for a real estate agent at The Home Shore (Pouliot Real Estate). Read the \
+conversation and extract what the buyer actually told you. Respond with ONLY a JSON object \
+— no markdown, no code fences, no commentary — with exactly these keys:
+
+{
+  "buyer_name": string or null,
+  "summary": "a 1-2 sentence plain-text overview of this buyer and what they want",
+  "budget": string,
+  "location": string,
+  "timeline": string,
+  "household": string,
+  "bedrooms_bathrooms": string,
+  "preapproval": string,
+  "must_haves": ["short strings"],
+  "nice_to_haves": ["short strings"],
+  "other_notes": string
+}
+
+For any field the buyer never addressed, use "Not discussed" (or an empty array for the \
+lists). Keep values concise. Do not invent anything the buyer did not provide."""
+
 TOOLS = [
     {
         "name": "estimate_home_value",
@@ -169,7 +193,7 @@ def fetch_listing(url):
         for s in soup.find_all("script", {"type": "application/ld+json"}):
             txt = (s.string or "").strip()
             if txt:
-                data["structured_data"].append(txt[:1500])
+                data["structured_data"].append(txt[:4000])
 
         if not any([data["title"], data["og_description"], data["structured_data"]]):
             return {"error": "the page loaded but no listing details were readable "
@@ -179,6 +203,82 @@ def fetch_listing(url):
     except Exception as e:
         print(f"[fetch_listing] exception: {e}")
         return {"error": f"could not fetch the listing: {e}"}
+
+def _pdf_safe(text):
+    """fpdf2's built-in fonts are Latin-1 only, so map common typographic
+    characters to ASCII and drop anything else (e.g. emoji) so rendering never crashes."""
+    if not text:
+        return ""
+    text = str(text)
+    for bad, good in {
+        "\u2014": "-", "\u2013": "-", "\u2018": "'", "\u2019": "'",
+        "\u201c": '"', "\u201d": '"', "\u2026": "...", "\u00a0": " ",
+    }.items():
+        text = text.replace(bad, good)
+    return text.encode("latin-1", "ignore").decode("latin-1")
+
+def build_pdf(profile, messages):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(0, 10, _pdf_safe("The Home Shore - Buyer Summary"),
+             new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_text_color(110, 110, 110)
+    pdf.cell(0, 6, _pdf_safe(f"Pouliot Real Estate  |  207-248-6044  |  "
+                             f"Generated {datetime.now():%B %d, %Y}"),
+             new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(4)
+
+    name = profile.get("buyer_name")
+    if name:
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.cell(0, 8, _pdf_safe(f"Buyer: {name}"), new_x="LMARGIN", new_y="NEXT")
+
+    summary = profile.get("summary")
+    if summary and summary != "Not discussed":
+        pdf.set_font("Helvetica", "I", 11)
+        pdf.multi_cell(0, 7, _pdf_safe(summary))
+        pdf.ln(2)
+
+    def field(label, value):
+        if isinstance(value, list):
+            value = ", ".join(value) if value else "Not discussed"
+        value = value if value else "Not discussed"
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(42, 7, _pdf_safe(label))
+        pdf.set_font("Helvetica", "", 11)
+        pdf.multi_cell(0, 7, _pdf_safe(value))
+
+    field("Budget", profile.get("budget"))
+    field("Location", profile.get("location"))
+    field("Timeline", profile.get("timeline"))
+    field("Household", profile.get("household"))
+    field("Beds / baths", profile.get("bedrooms_bathrooms"))
+    field("Pre-approval", profile.get("preapproval"))
+    field("Must-haves", profile.get("must_haves"))
+    field("Nice-to-haves", profile.get("nice_to_haves"))
+    field("Other notes", profile.get("other_notes"))
+
+    pdf.ln(6)
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 8, _pdf_safe("Full conversation"), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(1)
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, str):
+            continue
+        speaker = "Buyer" if m.get("role") == "user" else "Assistant"
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(0, 6, _pdf_safe(speaker), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 10)
+        pdf.multi_cell(0, 6, _pdf_safe(content))
+        pdf.ln(1)
+
+    return bytes(pdf.output())
 
 class ChatRequest(BaseModel):
     messages: list
@@ -205,7 +305,6 @@ def chat(req: ChatRequest):
         if resp.stop_reason != "tool_use":
             reply = "".join(b.text for b in resp.content if b.type == "text")
             return {"reply": reply}
-        # Claude asked to run a tool — record its turn, run the tool, feed the result back
         messages.append({"role": "assistant", "content": resp.content})
         results = []
         for block in resp.content:
@@ -223,3 +322,34 @@ def chat(req: ChatRequest):
                 })
         messages.append({"role": "user", "content": results})
     return {"reply": "Sorry — I got a bit tangled up there. Could you say that again?"}
+
+@app.post("/export")
+def export(req: ChatRequest):
+    convo_text = "\n".join(
+        f"{m['role'].upper()}: {m['content']}"
+        for m in req.messages if isinstance(m.get("content"), str)
+    )
+    profile = {}
+    try:
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1024,
+            system=EXPORT_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": convo_text or "No conversation."}],
+        )
+        raw = "".join(b.text for b in resp.content if b.type == "text").strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            raw = raw[4:].strip() if raw.lower().startswith("json") else raw.strip()
+        profile = json.loads(raw)
+        print(f"[export] profile keys: {list(profile.keys())}")
+    except Exception as e:
+        print(f"[export] summary failed: {e}")
+        profile = {}
+
+    pdf_bytes = build_pdf(profile, req.messages)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="home-shore-buyer-summary.pdf"'},
+    )
