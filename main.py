@@ -253,9 +253,10 @@ def build_pdf(profile, messages):
             value = ", ".join(value) if value else "Not discussed"
         value = value if value else "Not discussed"
         pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(42, 7, _pdf_safe(label))
+        pdf.multi_cell(0, 7, _pdf_safe(label))
         pdf.set_font("Helvetica", "", 11)
         pdf.multi_cell(0, 7, _pdf_safe(value))
+        pdf.ln(1)
 
     field("Budget", profile.get("budget"))
     field("Location", profile.get("location"))
