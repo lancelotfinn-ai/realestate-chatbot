@@ -1,4 +1,6 @@
 import os, json, subprocess
+import requests
+from bs4 import BeautifulSoup
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
