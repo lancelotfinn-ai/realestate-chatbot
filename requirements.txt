@@ -3,3 +3,4 @@ uvicorn[standard]
 anthropic
 requests
 beautifulsoup4
+fpdf2
