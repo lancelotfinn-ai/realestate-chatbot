@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Home Shore — buyer chat</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+    #log { border: 1px solid #ccc; border-radius: 8px; padding: 16px; height: 420px; overflow-y: auto; }
+    .msg { margin: 8px 0; }
+    .user { text-align: right; }
+    .bubble { display: inline-block; padding: 8px 12px; border-radius: 12px; max-width: 80%; }
+    .user .bubble { background: #2563eb; color: #fff; }
+    .bot .bubble  { background: #f0f0f0; color: #111; }
+    #row { display: flex; gap: 8px; margin-top: 12px; }
+    #input { flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }
+    button { padding: 10px 16px; border: none; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; }
+    button:disabled { opacity: 0.5; }
+  </style>
+</head>
+<body>
+  <h2>Talk to the Home Shore buyer assistant</h2>
+  <div id="log"></div>
+  <div id="row">
+    <input id="input" placeholder="Type a message..." autocomplete="off">
+    <button id="send">Send</button>
+  </div>
+  <script>
+    const log = document.getElementById('log');
+    const input = document.getElementById('input');
+    const send = document.getElementById('send');
+    const messages = [];
+
+    function addBubble(role, text) {
+      const div = document.createElement('div');
+      div.className = 'msg ' + (role === 'user' ? 'user' : 'bot');
+      const span = document.createElement('span');
+      span.className = 'bubble';
+      span.textContent = text;
+      div.appendChild(span);
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    async function sendMessage() {
+      const text = input.value.trim();
+      if (!text) return;
+      addBubble('user', text);
+      messages.push({ role: 'user', content: text });
+      input.value = '';
+      send.disabled = true;
+      try {
+        const res = await fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages })
+        });
+        const data = await res.json();
+        addBubble('assistant', data.reply);
+        messages.push({ role: 'assistant', content: data.reply });
+      } catch (e) {
+        addBubble('assistant', 'Error: ' + e.message);
+      }
+      send.disabled = false;
+      input.focus();
+    }
+
+    send.addEventListener('click', sendMessage);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
+  </script>
+</body>
+</html>
