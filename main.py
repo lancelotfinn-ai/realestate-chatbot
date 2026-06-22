@@ -208,9 +208,15 @@ def chat(req: ChatRequest):
         # Claude asked to run a tool — record its turn, run the tool, feed the result back
         messages.append({"role": "assistant", "content": resp.content})
         results = []
+        results = []
         for block in resp.content:
-            if block.type == "tool_use" and block.name == "estimate_home_value":
-                out = run_valuation(**block.input)
+            if block.type == "tool_use":
+                if block.name == "estimate_home_value":
+                    out = run_valuation(**block.input)
+                elif block.name == "fetch_listing":
+                    out = fetch_listing(**block.input)
+                else:
+                    out = {"error": "unknown tool"}
                 results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
