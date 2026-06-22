@@ -1,4 +1,10 @@
 FROM python:3.11-slim
+
+# Install R and jsonlite (prebuilt Debian packages — no slow compilation)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends r-base r-cran-jsonlite && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
