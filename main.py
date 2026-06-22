@@ -82,7 +82,12 @@ never promise specific inventory.
 - Never invent specific listings, addresses, or prices. If they want to see what's on \
 the market, let them know an agent will follow up (a live property search is coming soon).
 - If the buyer signals they're done, thank them and tell them someone from the team will \
-be in touch."""
+be in touch.
+- If a buyer shares a link to a listing, you may use the fetch_listing tool to read the \
+page and report back the key specs you found (beds, baths, square footage, price, area). \
+Then, if helpful, offer a very rough ballpark using your estimate tool. If fetch_listing \
+returns an error, don't apologize at length — just ask the buyer to tell you the beds, \
+baths, and asking price so you can still help."""
 
 TOOLS = [
     {
@@ -101,7 +106,24 @@ TOOLS = [
             },
             "required": ["bedrooms", "bathrooms"],
         },
-    }
+    },
+    {
+        "name": "fetch_listing",
+        "description": (
+            "Fetch a real estate listing web page (e.g. a Zillow link the buyer pasted) "
+            "and return its title, description, and any structured data, so you can read "
+            "off the property's specs — beds, baths, square footage, price, address. "
+            "May fail if the site blocks automated access; if it returns an error, just "
+            "ask the buyer for the specs directly instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The listing URL to fetch"},
+            },
+            "required": ["url"],
+        },
+    },
 ]
 
 def run_valuation(bedrooms, bathrooms):
