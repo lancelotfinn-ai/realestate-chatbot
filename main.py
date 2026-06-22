@@ -119,6 +119,45 @@ def run_valuation(bedrooms, bathrooms):
         print(f"[valuation] exception: {e}")
         return {"error": "valuation unavailable"}
 
+def fetch_listing(url):
+    try:
+        headers = {
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/124.0 Safari/537.36"),
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        r = requests.get(url, headers=headers, timeout=20)
+        if r.status_code != 200:
+            return {"error": f"could not load the page (status {r.status_code}); "
+                             "the site is likely blocking automated access"}
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        def meta(key, attr="property"):
+            tag = soup.find("meta", {attr: key})
+            return tag["content"] if tag and tag.has_attr("content") else None
+
+        data = {
+            "title": soup.title.string if soup.title else None,
+            "og_title": meta("og:title"),
+            "og_description": meta("og:description"),
+            "description": meta("description", attr="name"),
+            "structured_data": [],
+        }
+        for s in soup.find_all("script", {"type": "application/ld+json"}):
+            txt = (s.string or "").strip()
+            if txt:
+                data["structured_data"].append(txt[:1500])
+
+        if not any([data["title"], data["og_description"], data["structured_data"]]):
+            return {"error": "the page loaded but no listing details were readable "
+                             "(it may have served a bot-check page)"}
+        print(f"[fetch_listing] ok url={url} title={data['title']!r}")
+        return data
+    except Exception as e:
+        print(f"[fetch_listing] exception: {e}")
+        return {"error": f"could not fetch the listing: {e}"}
+
 class ChatRequest(BaseModel):
     messages: list
 
