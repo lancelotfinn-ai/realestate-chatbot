@@ -141,8 +141,6 @@ TOOLS = [
                 "is_condo":       {"type": "boolean"},
                 "water_view":     {"type": "boolean"},
                 "water_frontage": {"type": "boolean"},
-                "garage":         {"type": "boolean", "description": "Has an attached garage"},
-                "fireplace":      {"type": "boolean"},
             },
             "required": ["address"],
         },
