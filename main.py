@@ -121,6 +121,35 @@ TOOLS = [
     {
         "name": "estimate_home_value",
         "description": (
+            "Rough ballpark market-value estimate for a central Maine home. "
+            "Requires an address (town is enough if no street address) — location "
+            "drives much of the estimate. Pass whatever structural details the buyer "
+            "has mentioned; all are optional and missing ones are imputed, but more "
+            "detail tightens the range. ALWAYS present the result as a rough estimate, "
+            "never an appraisal, and mention an agent can give precise numbers."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "address":        {"type": "string",  "description": "Street address or at least town, e.g. '16 Cowboy Lane, Whitefield, ME' or 'Gardiner, ME'"},
+                "square_feet":    {"type": "number",  "description": "Finished living area, sq ft"},
+                "bedrooms":       {"type": "integer"},
+                "bathrooms":      {"type": "number",  "description": "Total baths; half-baths as 0.5"},
+                "lot_acres":      {"type": "number",  "description": "Lot size in acres"},
+                "year_built":     {"type": "integer"},
+                "is_mobile_home": {"type": "boolean", "description": "True if mobile/manufactured/double-wide"},
+                "is_condo":       {"type": "boolean"},
+                "water_view":     {"type": "boolean"},
+                "water_frontage": {"type": "boolean"},
+                "garage":         {"type": "boolean", "description": "Has an attached garage"},
+                "fireplace":      {"type": "boolean"},
+            },
+            "required": ["address"],
+        },
+    },  
+    {
+        "name": "estimate_home_value",
+        "description": (
             "Get a rough ballpark price range for a central Maine home based on the "
             "number of bedrooms and bathrooms. Use when the buyer has indicated roughly "
             "how many bedrooms and bathrooms they want and a ballpark figure would help. "
@@ -154,17 +183,56 @@ TOOLS = [
     },
 ]
 
-def run_valuation(bedrooms, bathrooms):
+# Maps the chatbot-friendly tool fields to the EXACT model variable names
+# valuation.R expects. valuation.R silently ignores unknown keys, so a
+# mismatch here would quietly fall back to defaults — keep this in sync
+# with the model's predictors.
+FIELD_MAP = {
+    "square_feet":    "SqFt.Finished.Total",
+    "bedrooms":       "X..Bedrooms",
+    "bathrooms":      "Total.Baths",
+    "lot_acres":      "Lot.Size.Acres....",
+    "year_built":     "Year.Built",
+}
+# Booleans map to 0/1 dummies (model name, plus how to read the bool).
+BOOL_MAP = {
+    "is_mobile_home": "is_mh",
+    "is_condo":       "is_condo",
+    "water_view":     "feat_water_view",
+    "water_frontage": "feat_water_frontage",
+    "garage":         "feat_garage_attached",
+    "fireplace":      "feat_fireplace",
+}
+
+def run_valuation(address=None, **fields):
+    if not address:
+        return {"error": "an address (or at least a town) is required to estimate value"}
+    user_input = {}
+    for friendly, model_name in FIELD_MAP.items():
+        if fields.get(friendly) is not None:
+            user_input[model_name] = fields[friendly]
+    for friendly, model_name in BOOL_MAP.items():
+        if fields.get(friendly) is not None:
+            user_input[model_name] = 1 if fields[friendly] else 0
     try:
-        payload = json.dumps({"bedrooms": bedrooms, "bathrooms": bathrooms})
+        payload = json.dumps({"address": address, "user_input": user_input})
         proc = subprocess.run(
             ["Rscript", "valuation.R", payload],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=45,
         )
-        print(f"[valuation] rc={proc.returncode} out={proc.stdout!r} err={proc.stderr[:200]!r}")
+        print(f"[valuation] rc={proc.returncode} out={proc.stdout!r} err={proc.stderr[:300]!r}")
         if proc.returncode != 0:
             return {"error": "valuation script failed"}
-        return json.loads(proc.stdout)
+        result = json.loads(proc.stdout)
+        if not result.get("ok"):
+            return {"error": result.get("reason", "could not estimate")}
+        return {
+            "estimate": result["estimate"],
+            "range_low": result["low"],
+            "range_high": result["high"],
+            "note": "Rough model estimate, not an appraisal. Range widens when fewer details are known.",
+            "could_ask_about": result.get("suggest_asking_about", []),
+        }
     except Exception as e:
         print(f"[valuation] exception: {e}")
         return {"error": "valuation unavailable"}
