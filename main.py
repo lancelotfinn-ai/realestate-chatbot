@@ -196,12 +196,10 @@ FIELD_MAP = {
 }
 # Booleans map to 0/1 dummies (model name, plus how to read the bool).
 BOOL_MAP = {
-    "is_mobile_home": "is_mh",
-    "is_condo":       "is_condo",
-    "water_view":     "feat_water_view",
-    "water_frontage": "feat_water_frontage",
-    "garage":         "feat_garage_attached",
-    "fireplace":      "feat_fireplace",
+    "is_mobile_home": "is_mh",                 # -0.378  (big negative — matters a lot)
+    "is_condo":       "is_condo",              # -0.126
+    "water_view":     "feat_water_view",       #  0.152
+    "water_frontage": "feat_water_frontage",   #  0.102
 }
 
 def run_valuation(address=None, **fields):
