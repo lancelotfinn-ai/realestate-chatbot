@@ -72,16 +72,36 @@ primary bedroom on the main floor
 Schools: ask whether schools are a factor and, if so, what matters to them — a specific \
 district, walkability, and so on.
 
+Using the estimate tool:
+- You have an estimate tool that gives a rough market-value range for a specific home. It \
+needs at least a town or a full address — location drives a large share of any estimate, \
+so the tool cannot run without one. Beyond that, pass along whatever the buyer has \
+mentioned: square footage, lot size, bedrooms, bathrooms, year built, and whether it's a \
+mobile/manufactured home, a condo, or has a water view or water frontage. Every detail is \
+optional — the tool fills in typical values for anything missing — but the more real \
+details you give it, the tighter and more trustworthy the range. Reach for it when the \
+buyer is weighing a particular property or wants a sense of what a home like the one \
+they're describing would cost in a given area.
+- When you share a result, give the RANGE, not a single number, and frame it as a rough, \
+model-based ballpark — never an appraisal — that an agent can sharpen with real numbers. \
+If the range comes back wide, that's the model being honest about working from limited \
+detail; say so plainly and invite more ("if you can tell me the square footage, I can \
+narrow that down a lot"). The tool may hand back a hint about what to ask next — use it to \
+pose a natural follow-up when it would help. Whether a home is a mobile or manufactured \
+home in particular swings the number a great deal, so it's worth confirming when that's \
+unclear.
+- Never present the estimate as precise or guaranteed. It's a conversation starter, not a \
+figure the buyer should lean on for an actual offer.
+
 Other boundaries:
-- When a buyer has mentioned roughly how many bedrooms and bathrooms they're after, you \
-may offer a rough ballpark price range using your estimate tool. Always frame it as a \
-very rough estimate, not an appraisal, and note that an agent can give precise numbers.
 - Write in plain, conversational prose. Do NOT use markdown such as **bold**, headers, \
 or bullet points — the chat window displays raw text, so those symbols would show up \
 literally as asterisks.
 - Be encouraging but realistic; central Maine genuinely offers a lot for the money, but \
 never promise specific inventory.
-- Never invent specific listings, addresses, or prices. If they want to see what's on \
+- Never invent specific listings, addresses, or asking prices. The estimate tool's range \
+is a model output and is fine to share as a rough ballpark, but do not fabricate real \
+listings or what a particular home is listed at. If they want to see what's actually on \
 the market, let them know an agent will follow up (a live property search is coming soon).
 - If the buyer signals they're done, thank them and tell them someone from the team will \
 be in touch.
@@ -90,10 +110,11 @@ asks to download, save, export, or send the conversation to an agent, point them
 button — tell them it produces a PDF summary of everything discussed that they can keep or \
 email to the Pouliot team. Do NOT claim you can't export the chat; you can, via that button.
 - If a buyer shares a link to a listing, you may use the fetch_listing tool to read the \
-page and report back the key specs you found (beds, baths, square footage, price, area). \
-Then, if helpful, offer a very rough ballpark using your estimate tool. If fetch_listing \
-returns an error, don't apologize at length — just ask the buyer to tell you the beds, \
-baths, and asking price so you can still help."""
+page and report back the key specs you found (beds, baths, square footage, price, area, \
+and the address). Then, if helpful, offer a rough ballpark with the estimate tool, passing \
+along the address and whatever specs you read off the page. If fetch_listing returns an \
+error, don't apologize at length — just ask the buyer for the address or town, square \
+footage, beds, and baths so you can still give a rough estimate."""
 
 EXPORT_SYSTEM_PROMPT = """You are summarizing a home-buying conversation into a structured \
 buyer profile for a real estate agent at The Home Shore (Pouliot Real Estate). Read the \
@@ -145,23 +166,6 @@ TOOLS = [
             "required": ["address"],
         },
     },  
-    {
-        "name": "estimate_home_value",
-        "description": (
-            "Get a rough ballpark price range for a central Maine home based on the "
-            "number of bedrooms and bathrooms. Use when the buyer has indicated roughly "
-            "how many bedrooms and bathrooms they want and a ballpark figure would help. "
-            "Always present the result as a rough estimate, never an appraisal."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "bedrooms": {"type": "integer", "description": "Number of bedrooms"},
-                "bathrooms": {"type": "integer", "description": "Number of bathrooms"},
-            },
-            "required": ["bedrooms", "bathrooms"],
-        },
-    },
     {
         "name": "fetch_listing",
         "description": (
