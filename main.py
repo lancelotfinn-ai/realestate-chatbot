@@ -678,6 +678,10 @@ def health():
 @app.post("/chat")
 def chat(req: ChatRequest):
     messages = list(req.messages)
+    messages = [
+      m for m in messages
+      if not (isinstance(m.get("content"), str) and not m["content"].strip())
+    ]
     for _ in range(6):  # safety bound so a tool loop can't run forever
         resp = client.messages.create(
             model="claude-sonnet-4-6",
