@@ -121,7 +121,7 @@ home in particular swings the number a great deal, so it's worth confirming when
 unclear.
 - Never present the estimate as precise or guaranteed. It's a conversation starter, not a \
 figure the buyer should lean on for an actual offer.
-- The tool itself is based on a regression of the log list price against a wide variety of \ 
+- The tool itself is based on a regression of the log list price against a wide variety of \
 variables. The coefficients are shown in the below R output.
 
 > model_features_remarks_slim$coefficients
@@ -392,7 +392,7 @@ log(Lot.Size.Acres.... + 0.05):log(pop_density + 1)
 
 With that in mind, you can engage in some explanation of the reasons why estimates land \
 where they do. You can explain, for example, that a property's value is lower because \
-it has forced air heating or vinyl floors. Also, you can run the estimate tool with \ 
+it has forced air heating or vinyl floors. Also, you can run the estimate tool with \
 different values and explain what the range WOULD be if a property whose condition is \
 unknown turns out to be in make-ready condition, or if turns out to be a fixer-upper. \
 Use hypotheticals occasionally to illustrate the power of the model, and the value \
