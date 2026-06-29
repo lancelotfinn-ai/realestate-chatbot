@@ -180,6 +180,32 @@
       downloadBtn.disabled = false;
       downloadBtn.textContent = 'Download summary (PDF)';
     });
+
+    // ---- email the whole chat when the visitor leaves -------------------
+    // Lets Nathan learn from every session, even ones with no contact info.
+    // Fires on tab-hide and page-unload (the reliable signals across desktop
+    // and mobile), guarded so we only send once per growth of the chat.
+    const sessionId = (window.crypto && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : String(Date.now()) + '-' + Math.random().toString(36).slice(2);
+    let lastFlushedCount = 0;
+
+    function flushSession() {
+      const hasUserMsg = messages.some(m => m.role === 'user');
+      if (!hasUserMsg || messages.length <= lastFlushedCount) return;
+      lastFlushedCount = messages.length;
+      try {
+        const blob = new Blob(
+          [JSON.stringify({ session_id: sessionId, messages })],
+          { type: 'application/json' });
+        navigator.sendBeacon('/session_end', blob);
+      } catch (e) { /* best-effort; nothing to do if it fails */ }
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushSession();
+    });
+    window.addEventListener('pagehide', flushSession);
   </script>
 </body>
 </html>
