@@ -10,17 +10,13 @@
     body { font-family: system-ui, sans-serif; max-width: 680px; margin: 0 auto;
            padding: 0 16px; min-height: 100vh; display: flex; flex-direction: column; }
 
-    #welcome { flex: 1; display: flex; flex-direction: column; justify-content: center;
-               align-items: center; text-align: center; gap: 20px; padding: 24px 0; }
-    #welcome h1 { font-size: 28px; font-weight: 500; margin: 0; }
-    #welcome p { color: #555; margin: 0; }
-    #welcome-row { display: flex; gap: 8px; width: 100%; max-width: 520px; }
-    .starters { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; max-width: 520px; }
+    .starters { display: flex; flex-wrap: wrap; gap: 8px; max-width: 520px; }
     .starter { padding: 8px 14px; border: 1px solid #d0d0d0; border-radius: 20px;
                background: #fff; cursor: pointer; font-size: 14px; color: #333; }
     .starter:hover { border-color: var(--blue); color: var(--blue); }
 
-    #chat { display: none; flex: 1; flex-direction: column; padding: 16px 0; }
+    #chat { display: flex; flex: 1; flex-direction: column; padding: 16px 0; }
+    #starters { padding: 4px 0 10px; }
     #chat-header { display: flex; justify-content: flex-end; padding-bottom: 8px; }
     #download-btn { background: #fff; color: var(--blue); border: 1px solid var(--blue);
                     padding: 7px 14px; border-radius: 20px; font-size: 13px; cursor: pointer; }
@@ -49,28 +45,17 @@
   </style>
 </head>
 <body>
-  <div id="welcome">
-    <div>
-      <h1>Let's find your home in central Maine</h1>
-      <p>Tell me a little about what you're looking for.</p>
-    </div>
-    <div id="welcome-row" class="row">
-      <input id="welcome-input" class="field" placeholder="Type a message..." autocomplete="off">
-      <button id="welcome-send" class="send">Send</button>
-    </div>
-    <div class="starters">
-      <div class="starter">I'm just starting to look for a home</div>
-      <div class="starter">What towns should I consider?</div>
-      <div class="starter">Help me figure out my budget</div>
-      <div class="starter">I'd like to see what's on the market</div>
-    </div>
-  </div>
-
   <div id="chat">
     <div id="chat-header">
       <button id="download-btn">Download summary (PDF)</button>
     </div>
     <div id="log"></div>
+    <div id="starters" class="starters">
+      <div class="starter">I'm just starting to look for a home</div>
+      <div class="starter">What towns should I consider?</div>
+      <div class="starter">Help me figure out my budget</div>
+      <div class="starter">Can you estimate what a home is worth?</div>
+    </div>
     <div class="row">
       <input id="chat-input" class="field" placeholder="Type a message..." autocomplete="off">
       <button id="chat-send" class="send">Send</button>
@@ -78,14 +63,31 @@
   </div>
 
   <script>
+    // The greeting is shown in the UI only — it is NOT added to `messages`,
+    // because the Anthropic API requires the history to start with a user turn.
+    // The system prompt tells the model an intro was already shown, so it won't
+    // re-introduce itself. Edit this text freely; plain prose only (no markdown).
+    const GREETING =
+      "Hi, and welcome! I'm Nathan Smith's AI assistant. Nathan is a data-driven " +
+      "real estate agent here in central Maine, and I'm here to help you get your " +
+      "bearings on the local market — no pressure, at whatever pace suits you.\n\n" +
+      "A few ways I can help: I can talk through what you're looking for — towns, " +
+      "budget, timeline, the features that matter — and help you figure out what " +
+      "fits. I can give you a rough, model-based estimate of what a home is worth: " +
+      "just tell me a town or a full address, plus whatever details you know. And if " +
+      "you've got a specific listing in mind, paste a Zillow or Redfin link and I'll " +
+      "read off the key specs and tell you how the asking price stacks up.\n\n" +
+      "When you're ready, I can pass your details along to Nathan so he can pick " +
+      "things up himself.\n\n" +
+      "So, what brings you here today — are you starting a home search, or mostly " +
+      "just curious about the market?";
+
     const messages = [];
-    const welcome = document.getElementById('welcome');
-    const chat = document.getElementById('chat');
     const log = document.getElementById('log');
-    const welcomeInput = document.getElementById('welcome-input');
     const chatInput = document.getElementById('chat-input');
     const chatSend = document.getElementById('chat-send');
     const downloadBtn = document.getElementById('download-btn');
+    const starters = document.getElementById('starters');
 
     function addBubble(role, text) {
       const div = document.createElement('div');
@@ -113,6 +115,7 @@
     }
 
     async function sendToBackend(text) {
+      if (starters) starters.style.display = 'none';
       addBubble('user', text);
       messages.push({ role: 'user', content: text });
       chatInput.value = '';
@@ -136,24 +139,17 @@
       chatInput.focus();
     }
 
-    function startConversation(text) {
-      text = (text || '').trim();
-      if (!text) return;
-      welcome.style.display = 'none';
-      chat.style.display = 'flex';
-      sendToBackend(text);
-    }
+    // Show the agent's introduction as soon as the page opens (UI only).
+    addBubble('assistant', GREETING);
 
-    document.getElementById('welcome-send')
-      .addEventListener('click', () => startConversation(welcomeInput.value));
-    welcomeInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter') startConversation(welcomeInput.value);
-    });
     document.querySelectorAll('.starter').forEach(chip => {
-      chip.addEventListener('click', () => startConversation(chip.textContent));
+      chip.addEventListener('click', () => sendToBackend(chip.textContent));
     });
 
-    chatSend.addEventListener('click', () => sendToBackend(chatInput.value.trim()));
+    chatSend.addEventListener('click', () => {
+      const v = chatInput.value.trim();
+      if (v) sendToBackend(v);
+    });
     chatInput.addEventListener('keydown', e => {
       if (e.key === 'Enter' && chatInput.value.trim()) sendToBackend(chatInput.value.trim());
     });
