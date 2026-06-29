@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from fpdf import FPDF
@@ -702,6 +702,30 @@ def _lead_email_html(lead, transcript):
     )
 
 
+def _resend_send(subject, html):
+    """Send one email via Resend. Returns True on success, False if the
+    RESEND_* env vars aren't configured or the send fails. Never raises.
+    Used for both lead alerts and full-chat transcripts."""
+    api_key   = os.environ.get("RESEND_API_KEY")
+    to_addr   = os.environ.get("LEAD_EMAIL_TO")
+    from_addr = os.environ.get("LEAD_EMAIL_FROM")
+    if not (api_key and to_addr and from_addr):
+        return False
+    try:
+        r = requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"from": from_addr, "to": [to_addr],
+                  "subject": subject, "html": html},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"[email] send failed: {e}")
+        return False
+
+
 def notify_lead(lead, messages):
     """Deliver a lead via whatever channels are configured. Returns True if at
     least one channel accepted it. Always logs the lead regardless."""
@@ -717,23 +741,9 @@ def notify_lead(lead, messages):
         except Exception as e:
             print(f"[lead] webhook failed: {e}")
 
-    api_key  = os.environ.get("RESEND_API_KEY")
-    to_addr  = os.environ.get("LEAD_EMAIL_TO")
-    from_addr = os.environ.get("LEAD_EMAIL_FROM")
-    if api_key and to_addr and from_addr:
-        try:
-            r = requests.post(
-                "https://api.resend.com/emails",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={"from": from_addr, "to": [to_addr],
-                      "subject": f"New buyer lead: {lead.get('name') or 'someone'}",
-                      "html": _lead_email_html(lead, transcript)},
-                timeout=10,
-            )
-            r.raise_for_status()
-            delivered = True
-        except Exception as e:
-            print(f"[lead] email failed: {e}")
+    if _resend_send(f"New buyer lead: {lead.get('name') or 'someone'}",
+                    _lead_email_html(lead, transcript)):
+        delivered = True
 
     print(f"[lead] {json.dumps(lead)} delivered={delivered}")
     return delivered
@@ -752,6 +762,29 @@ def save_lead(name=None, phone=None, email=None, best_time=None, notes=None,
     }
     delivered = notify_lead(lead, _messages or [])
     return {"saved": True, "delivered": delivered}
+
+
+# ---- full-chat transcripts (emailed for EVERY session, lead or not) ------
+# A chat has no server-side "end" event, so the browser pings /session_end when
+# the visitor leaves the page (see index.html). We email the whole transcript
+# so Nathan can learn from how people engage, even when no contact info was
+# shared. Dedup is best-effort and in-memory (resets on deploy).
+_session_lock = threading.Lock()
+_emailed_sessions = {}   # session_id -> highest message count already emailed
+
+
+def _chat_email_html(messages, meta):
+    transcript = _transcript(messages)
+    convo = (transcript or "(no messages)").replace("&", "&amp;").replace("<", "&lt;")
+    metarows = "".join(
+        f"<tr><td style='padding:2px 10px 2px 0;color:#666'>{k}</td>"
+        f"<td style='padding:2px 0'><b>{v}</b></td></tr>"
+        for k, v in meta.items())
+    return (
+        f"<h2 style='margin:0 0 8px'>Home Shore chat transcript</h2>"
+        f"<table style='font:14px system-ui'>{metarows}</table>"
+        f"<hr><pre style='white-space:pre-wrap;font:13px system-ui'>{convo}</pre>"
+    )
 
 
 def _shape_valuation(result):
@@ -997,3 +1030,47 @@ def export(req: ChatRequest):
         media_type="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="home-shore-buyer-summary.pdf"'},
     )
+
+
+@app.post("/session_end")
+async def session_end(request: Request):
+    """Emails the full transcript when a visitor leaves the page, for EVERY
+    session that had at least one visitor message — lead or not. Called via
+    navigator.sendBeacon, whose body/content-type can be quirky, so we parse
+    the raw body defensively and never error back to the browser."""
+    try:
+        data = json.loads(await request.body() or b"{}")
+    except Exception:
+        return {"ok": False}
+
+    sid = (data.get("session_id") or "").strip()
+    msgs = data.get("messages") or []
+    user_turns = [
+        m for m in msgs
+        if isinstance(m.get("content"), str)
+        and m.get("role") == "user" and m["content"].strip()
+    ]
+    if not user_turns:
+        return {"ok": True, "skipped": "no visitor messages"}
+
+    count = sum(1 for m in msgs if isinstance(m.get("content"), str))
+    with _session_lock:
+        if sid and _emailed_sessions.get(sid, 0) >= count:
+            return {"ok": True, "skipped": "already emailed"}
+        if sid:
+            _emailed_sessions[sid] = count
+            if len(_emailed_sessions) > 5000:      # crude cap; resets on deploy
+                _emailed_sessions.clear()
+                _emailed_sessions[sid] = count
+
+    meta = {
+        "When": datetime.now().strftime("%b %d, %Y %I:%M %p"),
+        "Visitor messages": str(len(user_turns)),
+        "Total messages": str(count),
+    }
+    sent = _resend_send(
+        subject=f"Home Shore chat — {len(user_turns)} message(s) from a visitor",
+        html=_chat_email_html(msgs, meta),
+    )
+    print(f"[session_end] sid={sid[:8]} count={count} emailed={sent}")
+    return {"ok": True, "emailed": sent}
