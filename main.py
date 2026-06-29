@@ -1,4 +1,5 @@
-import os, json, subprocess
+import os, json, subprocess, time, select, threading
+from contextlib import asynccontextmanager
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
@@ -8,8 +9,134 @@ from pydantic import BaseModel
 from fpdf import FPDF
 import anthropic
 
-app = FastAPI()
 client = anthropic.Anthropic()
+
+
+# ============================================================
+# Persistent R valuation worker
+#
+# The CLI shim (Rscript valuation.R <json>) reloads sf + every artifact and
+# reprojects the coastline on EVERY call (~seconds). This keeps one R process
+# alive that sources valuation.R once, then answers one valuation per line over
+# stdin/stdout. Steady-state calls skip the reload entirely.
+#
+# On any failure the worker is discarded (next call respawns a clean one) and
+# run_valuation() falls back to the per-call CLI shim, so latency degrades to
+# today's behavior in the worst case rather than breaking.
+# ============================================================
+class RWorker:
+    def __init__(self, cmd=None, ready_timeout=90, call_timeout=45):
+        self.cmd = cmd or ["Rscript", "r_worker.R"]
+        self.ready_timeout = ready_timeout
+        self.call_timeout = call_timeout
+        self.proc = None
+        self._ready = False
+        self._buf = b""
+        self._counter = 0
+        self.lock = threading.Lock()
+
+    def start(self):
+        self.stop()
+        self.proc = subprocess.Popen(
+            self.cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, bufsize=0,
+        )
+        self._ready = False
+        self._buf = b""
+
+    def stop(self):
+        if self.proc and self.proc.poll() is None:
+            try:
+                self.proc.terminate(); self.proc.wait(timeout=5)
+            except Exception:
+                try: self.proc.kill()
+                except Exception: pass
+        self.proc = None
+        self._ready = False
+        self._buf = b""
+
+    def _alive(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def _read_line(self, deadline):
+        while True:
+            nl = self._buf.find(b"\n")
+            if nl != -1:
+                line = self._buf[:nl]
+                self._buf = self._buf[nl + 1:]
+                return line.decode("utf-8", "replace").strip()
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise TimeoutError("R worker read timed out")
+            r, _, _ = select.select([self.proc.stdout], [], [], remaining)
+            if not r:
+                raise TimeoutError("R worker read timed out")
+            chunk = os.read(self.proc.stdout.fileno(), 65536)
+            if chunk == b"":
+                raise RuntimeError("R worker closed stdout (process died)")
+            self._buf += chunk
+
+    def _ensure_ready(self):
+        if self._ready:
+            return
+        deadline = time.time() + self.ready_timeout
+        while True:
+            line = self._read_line(deadline)
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if obj.get("ready"):
+                self._ready = True
+                return
+
+    def value(self, address, user_input):
+        with self.lock:
+            if not self._alive():
+                self.start()
+            try:
+                self._ensure_ready()
+                self._counter += 1
+                rid = self._counter
+                req = json.dumps({"id": rid, "address": address,
+                                  "user_input": user_input}) + "\n"
+                self.proc.stdin.write(req.encode("utf-8"))
+                self.proc.stdin.flush()
+                deadline = time.time() + self.call_timeout
+                while True:
+                    line = self._read_line(deadline)
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    if obj.get("id") == rid:
+                        return obj
+            except Exception:
+                self.stop()
+                raise
+
+
+r_worker = RWorker()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    # Spawn the worker at startup; readiness is consumed lazily on the first
+    # valuation so the port opens immediately (Render health check stays happy).
+    try:
+        r_worker.start()
+        print("[rworker] spawned")
+    except Exception as e:
+        print(f"[rworker] could not spawn, will use CLI fallback: {e}")
+    yield
+    r_worker.stop()
+
+
+app = FastAPI(lifespan=lifespan)
 
 SYSTEM_PROMPT = """You are an AI assistant for realtor Nathan Smith, working in central Maine. \
 You expect users of the site to be active or potential home buyers or home sellers, and \
@@ -46,7 +173,9 @@ want to make a smart decision.
 One objective in the conversation is to onboard users as clients for Nathan, \
 but do not rush it. If a conversation continues for a few turns, consider \
 suggesting that the user provide a name and phone number so that Nathan \
-can give them a call.
+can give them a call. When the buyer shares a phone number or email along with \
+their name, call the save_lead tool right away to record it, then confirm warmly \
+that Nathan will follow up — don't keep asking for details you've already saved.
 
 In general, keep your replies short. But the length should vary: sometimes \
 one follow-up question is sufficient, whereas at other times, a longer explanation \
@@ -496,6 +625,27 @@ TOOLS = [
             "required": ["url"],
         },
     },
+    {
+        "name": "save_lead",
+        "description": (
+            "Record a buyer lead so Nathan can follow up. Call this AS SOON AS the "
+            "buyer has shared a way to reach them — a phone number or an email — "
+            "along with their name. Call it at most once per conversation (again only "
+            "if they correct their details). After it succeeds, confirm warmly that "
+            "Nathan will be in touch and stop asking for contact info."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name":      {"type": "string", "description": "Buyer's name"},
+                "phone":     {"type": "string", "description": "Phone number, if given"},
+                "email":     {"type": "string", "description": "Email, if given"},
+                "best_time": {"type": "string", "description": "When they prefer to be reached, if mentioned"},
+                "notes":     {"type": "string", "description": "One line on what they're after: area, budget, timeline"},
+            },
+            "required": ["name"],
+        },
+    },
 ]
 
 # Maps the chatbot-friendly tool fields to the EXACT model variable names
@@ -517,6 +667,123 @@ BOOL_MAP = {
     "water_frontage": "feat_water_frontage",   #  0.102
 }
 
+# ============================================================
+# Lead capture
+#
+# Delivery is env-driven and best-effort; nothing here is required for the app
+# to run. A lead is ALWAYS logged, so it's never silently lost even if no
+# channel is configured. Configure either or both:
+#   LEAD_WEBHOOK_URL  -> POSTs the lead as JSON (Google Apps Script / Zapier /
+#                        Make / Slack incoming webhook). Best for durable storage
+#                        in a Google Sheet with no database.
+#   RESEND_API_KEY + LEAD_EMAIL_TO + LEAD_EMAIL_FROM -> emails Nathan the lead.
+#                        (LEAD_EMAIL_FROM must be a Resend-verified sender.)
+# ============================================================
+def _transcript(messages):
+    return "\n".join(
+        f"{m['role'].upper()}: {m['content']}"
+        for m in messages if isinstance(m.get("content"), str) and m["content"].strip()
+    )
+
+
+def _lead_email_html(lead, transcript):
+    rows = "".join(
+        f"<tr><td style='padding:2px 10px 2px 0;color:#666'>{k}</td>"
+        f"<td style='padding:2px 0'><b>{(lead.get(k) or '—')}</b></td></tr>"
+        for k in ("name", "phone", "email", "best_time", "notes")
+    )
+    convo = (transcript or "(no transcript)").replace("&", "&amp;").replace("<", "&lt;")
+    return (
+        f"<h2 style='margin:0 0 8px'>New buyer lead</h2>"
+        f"<table style='font:14px system-ui'>{rows}</table>"
+        f"<p style='color:#888;font-size:12px'>Captured {lead.get('captured_at')}</p>"
+        f"<hr><h3>Conversation</h3>"
+        f"<pre style='white-space:pre-wrap;font:13px system-ui'>{convo}</pre>"
+    )
+
+
+def notify_lead(lead, messages):
+    """Deliver a lead via whatever channels are configured. Returns True if at
+    least one channel accepted it. Always logs the lead regardless."""
+    transcript = _transcript(messages)
+    delivered = False
+
+    hook = os.environ.get("LEAD_WEBHOOK_URL")
+    if hook:
+        try:
+            r = requests.post(hook, json={**lead, "transcript": transcript}, timeout=10)
+            r.raise_for_status()
+            delivered = True
+        except Exception as e:
+            print(f"[lead] webhook failed: {e}")
+
+    api_key  = os.environ.get("RESEND_API_KEY")
+    to_addr  = os.environ.get("LEAD_EMAIL_TO")
+    from_addr = os.environ.get("LEAD_EMAIL_FROM")
+    if api_key and to_addr and from_addr:
+        try:
+            r = requests.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={"from": from_addr, "to": [to_addr],
+                      "subject": f"New buyer lead: {lead.get('name') or 'someone'}",
+                      "html": _lead_email_html(lead, transcript)},
+                timeout=10,
+            )
+            r.raise_for_status()
+            delivered = True
+        except Exception as e:
+            print(f"[lead] email failed: {e}")
+
+    print(f"[lead] {json.dumps(lead)} delivered={delivered}")
+    return delivered
+
+
+def save_lead(name=None, phone=None, email=None, best_time=None, notes=None,
+              _messages=None):
+    if not (phone or email):
+        # Tell the model so it keeps the conversation going rather than confirming.
+        return {"saved": False, "reason": "need a phone number or an email first"}
+    lead = {
+        "name": name, "phone": phone, "email": email,
+        "best_time": best_time, "notes": notes,
+        "captured_at": datetime.now().isoformat(timespec="seconds"),
+        "source": "chat",
+    }
+    delivered = notify_lead(lead, _messages or [])
+    return {"saved": True, "delivered": delivered}
+
+
+def _shape_valuation(result):
+    if not result or not result.get("ok"):
+        reason = result.get("reason") if result else None
+        return {"error": reason or "could not estimate"}
+    return {
+        "estimate": result["estimate"],
+        "range_low": result["low"],
+        "range_high": result["high"],
+        "note": "Rough model estimate, not an appraisal. Range widens when fewer details are known.",
+        "could_ask_about": result.get("suggest_asking_about", []),
+    }
+
+
+def _valuation_cli(address, user_input):
+    """Fallback: per-call Rscript (reloads artifacts each time, but always works)."""
+    try:
+        payload = json.dumps({"address": address, "user_input": user_input})
+        proc = subprocess.run(
+            ["Rscript", "valuation.R", payload],
+            capture_output=True, text=True, timeout=45,
+        )
+        print(f"[valuation] cli rc={proc.returncode} err={proc.stderr[:300]!r}")
+        if proc.returncode != 0:
+            return {"error": "valuation script failed"}
+        return _shape_valuation(json.loads(proc.stdout))
+    except Exception as e:
+        print(f"[valuation] cli exception: {e}")
+        return {"error": "valuation unavailable"}
+
+
 def run_valuation(address=None, **fields):
     if not address:
         return {"error": "an address (or at least a town) is required to estimate value"}
@@ -527,28 +794,13 @@ def run_valuation(address=None, **fields):
     for friendly, model_name in BOOL_MAP.items():
         if fields.get(friendly) is not None:
             user_input[model_name] = 1 if fields[friendly] else 0
+    # fast path: persistent worker (artifacts already loaded)
     try:
-        payload = json.dumps({"address": address, "user_input": user_input})
-        proc = subprocess.run(
-            ["Rscript", "valuation.R", payload],
-            capture_output=True, text=True, timeout=45,
-        )
-        print(f"[valuation] rc={proc.returncode} out={proc.stdout!r} err={proc.stderr[:300]!r}")
-        if proc.returncode != 0:
-            return {"error": "valuation script failed"}
-        result = json.loads(proc.stdout)
-        if not result.get("ok"):
-            return {"error": result.get("reason", "could not estimate")}
-        return {
-            "estimate": result["estimate"],
-            "range_low": result["low"],
-            "range_high": result["high"],
-            "note": "Rough model estimate, not an appraisal. Range widens when fewer details are known.",
-            "could_ask_about": result.get("suggest_asking_about", []),
-        }
+        return _shape_valuation(r_worker.value(address, user_input))
     except Exception as e:
-        print(f"[valuation] exception: {e}")
-        return {"error": "valuation unavailable"}
+        print(f"[valuation] worker path failed ({type(e).__name__}: {e}); using CLI fallback")
+    # fallback: per-call Rscript shim
+    return _valuation_cli(address, user_input)
 
 def fetch_listing(url):
     try:
@@ -703,6 +955,8 @@ def chat(req: ChatRequest):
                     out = run_valuation(**block.input)
                 elif block.name == "fetch_listing":
                     out = fetch_listing(**block.input)
+                elif block.name == "save_lead":
+                    out = save_lead(_messages=messages, **block.input)
                 else:
                     out = {"error": "unknown tool"}
                 results.append({
