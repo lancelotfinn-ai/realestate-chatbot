@@ -1074,3 +1074,40 @@ async def session_end(request: Request):
     )
     print(f"[session_end] sid={sid[:8]} count={count} emailed={sent}")
     return {"ok": True, "emailed": sent}
+
+
+@app.get("/test_email")
+def test_email():
+    """Visit this URL in a browser to check email setup WITHOUT staging a chat.
+    Reports whether the env vars are set and exactly what Resend says back, so
+    you can tell 'not configured' apart from 'Resend rejected it'. Safe to leave
+    in (it only ever emails your own configured LEAD_EMAIL_TO); delete once you've
+    confirmed it works."""
+    api_key   = os.environ.get("RESEND_API_KEY")
+    to_addr   = os.environ.get("LEAD_EMAIL_TO")
+    from_addr = os.environ.get("LEAD_EMAIL_FROM")
+    info = {
+        "RESEND_API_KEY_set": bool(api_key),
+        "LEAD_EMAIL_TO": to_addr,
+        "LEAD_EMAIL_FROM": from_addr,
+    }
+    if not (api_key and to_addr and from_addr):
+        info["result"] = ("MISSING env vars — set RESEND_API_KEY, LEAD_EMAIL_TO and "
+                          "LEAD_EMAIL_FROM in Render -> Environment, then redeploy")
+        return info
+    try:
+        r = requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"from": from_addr, "to": [to_addr],
+                  "subject": "Home Shore test email",
+                  "html": "<p>If you can read this, Resend is wired up correctly.</p>"},
+            timeout=10,
+        )
+        info["resend_status"] = r.status_code
+        info["resend_response"] = r.text[:600]
+        info["result"] = ("SENT — check your inbox and spam folder" if r.ok
+                          else "Resend REJECTED it — read resend_response for why")
+    except Exception as e:
+        info["result"] = f"request to Resend failed: {e}"
+    return info
